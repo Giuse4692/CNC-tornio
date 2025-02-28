@@ -1,121 +1,145 @@
-# -*- coding: utf-8 -*-
 import tkinter as tk
-from tkinter import ttk, filedialog
-import serial
-import time
+from tkinter import ttk, filedialog, messagebox
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import os
 
-# Flag per modalità simulazione
-simulation_mode = True
+class CNCApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("CNC Tornio")
+        
+        # Frame sinistro per i vecchi programmi e il tasto per creare nuovi programmi
+        self.left_frame = ttk.Frame(self.root, width=200)
+        self.left_frame.pack(side="left", fill="y")
+        
+        self.program_list_label = ttk.Label(self.left_frame, text="Vecchi Programmi")
+        self.program_list_label.pack(pady=10)
+        
+        self.program_listbox = tk.Listbox(self.left_frame)
+        self.program_listbox.pack(padx=10, pady=10)
+        
+        self.new_program_button = ttk.Button(self.left_frame, text="Crea Nuovo Programma", command=self.create_new_program)
+        self.new_program_button.pack(pady=10)
+        
+        self.load_program_button = ttk.Button(self.left_frame, text="Carica Programma", command=self.load_program)
+        self.load_program_button.pack(pady=10)
+        
+        self.translate_program_button = ttk.Button(self.left_frame, text="Traduci G-code", command=self.translate_gcode)
+        self.translate_program_button.pack(pady=10)
+        
+        # Frame destro per il piano cartesiano
+        self.right_frame = ttk.Frame(self.root)
+        self.right_frame.pack(side="right", fill="both", expand=True)
+        
+        self.figure = Figure(figsize=(5, 5), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        
+        self.canvas = FigureCanvasTkAgg(self.figure, self.right_frame)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        
+        self.plot_initial_graph()
+    
+    def create_new_program(self):
+        # Funzione per creare un nuovo programma
+        pass
+    
+    def load_program(self):
+        # Funzione per caricare un programma
+        file_path = filedialog.askopenfilename(title="Seleziona il programma", filetypes=(("Python files", "*.py"), ("Arduino files", "*.ino"), ("G-code files", "*.gcode")))
+        if file_path:
+            self.program_listbox.insert(tk.END, file_path)
+    
+    def translate_gcode(self):
+        # Funzione per tradurre un programma G-code in un programma Arduino
+        selected_program_index = self.program_listbox.curselection()
+        if not selected_program_index:
+            messagebox.showerror("Errore", "Nessun programma selezionato")
+            return
+        
+        program_path = self.program_listbox.get(selected_program_index)
+        if program_path.endswith('.gcode'):
+            self.translate_gcode_to_arduino(program_path)
+        else:
+            messagebox.showerror("Errore", "Seleziona un file G-code")
+    
+    def translate_gcode_to_arduino(self, program_path):
+        # Funzione per tradurre G-code in comandi Arduino e scrivere in un file .ino
+        try:
+            with open(program_path, 'r') as file:
+                gcode_data = file.readlines()
+            
+            arduino_commands = self.convert_gcode_to_arduino(gcode_data)
+            
+            arduino_file_path = os.path.splitext(program_path)[0] + ".ino"
+            with open(arduino_file_path, 'w') as arduino_file:
+                arduino_file.write(arduino_commands)
+            
+            messagebox.showinfo("Successo", f"Programma tradotto e salvato in {arduino_file_path}")
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile tradurre il programma G-code: {e}")
+    
+    def convert_gcode_to_arduino(self, gcode_data):
+        # Funzione per convertire G-code in comandi Arduino
+        arduino_code = """
+// Configurazione iniziale
+void setup() {
+  pinMode(9, OUTPUT);  // Pin per il PWM
+  pinMode(10, OUTPUT); // Pin per il PWM
+  pinMode(11, OUTPUT); // Pin per il PWM
+  Serial.begin(115200);  // Inizializza la comunicazione seriale
+}
 
-# Variabili per feedback visivo
-current_speed = 0
-current_direction = "Stop"
-spindle_position = {"X": 0, "Y": 0, "Z": 0}
-programs = []
+// Funzioni di utilità
+void wave(int x, int y, int z) {
+  analogWrite(9, y);  // PWM sul pin 9
+  analogWrite(10, y); // PWM sul pin 10
+  analogWrite(11, y); // PWM sul pin 11
+  
+  int delayTime = 1000000 / z;  // Calcola il tempo di delay in microsecondi
+  
+  for (int i = 0; i < x; i++) {
+    digitalWrite(9, HIGH);
+    digitalWrite(10, HIGH);
+    digitalWrite(11, HIGH);
+    delayMicroseconds(delayTime);
+    digitalWrite(9, LOW);
+    digitalWrite(10, LOW);
+    digitalWrite(11, LOW);
+    delayMicroseconds(delayTime);
+  }
+}
 
-# Funzione per inviare comandi
-def send_command(command):
-    global current_speed, current_direction
-    if simulation_mode:
-        print(f"Simulazione: Comando inviato -> {command}")
-    else:
-        arduino.write(command.encode())
+void loop() {
+  // Loop principale vuoto
+}
 
-    # Aggiornare feedback visivo
-    if command == 'u':
-        current_speed += 10
-    elif command == 'd':
-        current_speed -= 10
-    elif command == 'f':
-        current_direction = "Avanti"
-    elif command == 'b':
-        current_direction = "Indietro"
+// Comandi tradotti dal file G-code
+"""
+        for line in gcode_data:
+            line = line.strip()
+            if line.startswith('G1'):  # Traduzione del comando G1
+                parts = line.split()
+                x = y = z = None
+                for part in parts:
+                    if part.startswith('X'):
+                        x = part[1:]
+                    elif part.startswith('Y'):
+                        y = part[1:]
+                    elif part.startswith('Z'):
+                        z = part[1:]
+                if x and y and z:
+                    arduino_code += f'wave({x}, {y}, {z});\n'
+        return arduino_code
+    
+    def plot_initial_graph(self):
+        # Funzione per tracciare il grafico iniziale
+        self.ax.plot([], [])
+        self.canvas.draw()
 
-    current_speed = max(0, min(current_speed, 255))  # Limita la velocità tra 0 e 255
-    update_labels()
-
-def increase_speed():
-    send_command('u')
-
-def decrease_speed():
-    send_command('d')
-
-def move_forward():
-    send_command('f')
-
-def move_backward():
-    send_command('b')
-
-def update_labels():
-    speed_label.config(text=f"Velocità: {current_speed}")
-    direction_label.config(text=f"Direzione: {current_direction}")
-
-def update_position(x, y, z):
-    spindle_position["X"] = x
-    spindle_position["Y"] = y
-    spindle_position["Z"] = z
-    position_label.config(text=f"Posizione Spindle: X={x}, Y={y}, Z={z}")
-
-def import_program():
-    file_path = filedialog.askopenfilename(filetypes=[("G-code files", "*.nc;*.gcode;*.tap;*.cnc"), ("All files", "*.*")])
-    if file_path:
-        with open(file_path, 'r') as file:
-            program_name = file_path.split('/')[-1]
-            programs.append(program_name)
-            program_listbox.insert(tk.END, program_name)
-
-# Tentativo di connessione all'Arduino
-if not simulation_mode:
-    try:
-        # Sostituisci 'COM3' con la porta del tuo Arduino
-        arduino = serial.Serial('COM3', 9600, timeout=1)
-        time.sleep(2)
-    except serial.SerialException:
-        print("Errore: Impossibile connettersi all'Arduino. Assicurati che sia collegato.")
-        simulation_mode = True
-
-# Creazione della finestra principale
-root = tk.Tk()
-root.title("Interfaccia di Controllo Motore")
-
-# Creazione e posizionamento dei pulsanti
-increase_button = tk.Button(root, text="Aumenta Velocità", command=increase_speed)
-increase_button.grid(row=0, column=0, padx=10, pady=10)
-
-decrease_button = tk.Button(root, text="Diminuisci Velocità", command=decrease_speed)
-decrease_button.grid(row=1, column=0, padx=10, pady=10)
-
-forward_button = tk.Button(root, text="Avanti", command=move_forward)
-forward_button.grid(row=2, column=0, padx=10, pady=10)
-
-backward_button = tk.Button(root, text="Indietro", command=move_backward)
-backward_button.grid(row=3, column=0, padx=10, pady=10)
-
-# Etichette per il feedback visivo
-speed_label = tk.Label(root, text=f"Velocità: {current_speed}")
-speed_label.grid(row=0, column=1, padx=10, pady=10)
-
-direction_label = tk.Label(root, text=f"Direzione: {current_direction}")
-direction_label.grid(row=1, column=1, padx=10, pady=10)
-
-# Etichetta per la posizione dello spindle
-position_label = tk.Label(root, text=f"Posizione Spindle: X=0, Y=0, Z=0")
-position_label.grid(row=2, column=1, padx=10, pady=10)
-
-# Lista programmi eseguiti
-program_label = tk.Label(root, text="Programmi Eseguiti:")
-program_label.grid(row=3, column=1, padx=10, pady=10)
-
-program_listbox = tk.Listbox(root)
-program_listbox.grid(row=4, column=1, padx=10, pady=10)
-
-# Aggiungi programmi di esempio
-for program in programs:
-    program_listbox.insert(tk.END, program)
-
-# Pulsante per importare programmi
-import_button = tk.Button(root, text="Importa Programma", command=import_program)
-import_button.grid(row=5, column=1, padx=10, pady=10)
-
-# Avvio del ciclo di eventi della GUI
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = CNCApp(root)
+    root.mainloop()
