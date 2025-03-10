@@ -61,7 +61,8 @@ def prepare_simulation(app):
 
 def update_position(app, x, y):
     """Aggiorna la posizione nel grafico senza ridisegnare tutto."""
-    current_x_data, current_y_data = app.line.get_xdata(), app.line.get_ydata()
+    current_x_data = list(app.line.get_xdata())
+    current_y_data = list(app.line.get_ydata())
     current_x_data.append(x)
     current_y_data.append(y)
 
@@ -77,63 +78,36 @@ def reset_simulation(app):
     """Resetta la simulazione alle impostazioni iniziali."""
     app.current_instruction_index = 0
     app.current_position = [30, -10]
-    app.simulation_paused = False
-    initialize_graph(app)
+    initialize_graph(app, reset=True)
     deselect_all_instructions(app)
 
-def initialize_graph(app):
+def initialize_graph(app, reset=False):
     """Inizializza il grafico."""
-    app.ax.clear()
-    app.ax.set_xlabel("X")
-    app.ax.set_ylabel("Y")
-    app.ax.set_xlim([0, 35])
-    app.ax.set_ylim([-20, 20])
-    triangle = [[30, -10], [30-1, -10-1], [30+1, -10-1]]
-    app.ax.add_patch(plt.Polygon(triangle, closed=True, color='green'))
+    if reset or not hasattr(app, 'line'):
+        app.ax.clear()
+        app.ax.set_xlabel("X")
+        app.ax.set_ylabel("Y")
+        app.ax.set_xlim([0, 35])
+        app.ax.set_ylim([-10, 10])
+        triangle = [[30, -10], [30-1, -10-1], [30+1, -10-1]]
+        app.triangle = plt.Polygon(triangle, closed=True, color='green')
+        app.ax.add_patch(app.triangle)
+        app.line, = app.ax.plot([], [], 'bo-')  # Inizializza la linea qui
+    else:
+        app.line.set_data([], [])  # Resetta i dati della linea
     app.canvas.draw()
 
 def simulate_program(app, gcode_instructions):
     """Simula tutte le istruzioni G-code sul grafico."""
     reset_simulation(app)
     app.gcode_instructions = gcode_instructions
-    execute_next_instruction(app)
+    execute_all_instructions(app)
 
-def execute_next_instruction(app):
-    """Esegue la prossima istruzione G-code."""
-    if app.simulation_paused or app.current_instruction_index >= len(app.gcode_instructions):
-        app.show_message("Simulazione completata")
-        return
-
-    if app.current_instruction_index > 0:
-        app.gcode_listbox.itemconfig(app.current_instruction_index - 1, {'bg': 'white'})
-
-    instruction = app.gcode_instructions[app.current_instruction_index].strip()
-    app.gcode_listbox.itemconfig(app.current_instruction_index, {'bg': 'yellow'})
-    app.canvas.draw()
-    app.root.update()
-
-    x, y = app.current_position
-    x, y, duration, feed_rate = execute_gcode_instruction(app, instruction, x, y)
-
-    if instruction.startswith('G00') or instruction.startswith('G01'):
-        if instruction.startswith('G00'):
-            draw_line(app, app.current_position, [x, y], 'ro-')
-            app.current_position = [x, y]
-            app.canvas.draw()
-            app.show_message(f"Eseguendo: {instruction}")
-            app.current_instruction_index += 1
-            execute_next_instruction(app)
-        else:
-            draw_line_with_speed(app, app.current_position, [x, y], 'bo-', feed_rate, lambda: on_line_draw_complete(app, [x, y]))
-    else:
-        app.current_instruction_index += 1
-        execute_next_instruction(app)
-
-def on_line_draw_complete(app, new_position):
-    """Callback per quando il disegno della linea è completo."""
-    app.current_position = new_position
-    app.current_instruction_index += 1
-    execute_next_instruction(app)
+def execute_all_instructions(app):
+    """Esegue tutte le istruzioni G-code in sequenza."""
+    while app.current_instruction_index < len(app.gcode_instructions):
+        step_simulation(app)
+    app.show_message("Simulazione completata")
 
 def step_simulation(app):
     """Esegue un'istruzione G-code alla volta sul grafico."""
@@ -153,22 +127,20 @@ def step_simulation(app):
     x, y = app.current_position
     x, y, duration, feed_rate = execute_gcode_instruction(app, instruction, x, y)
 
-    if instruction.startswith('G00') or instruction.startswith('G01'):
-        if instruction.startswith('G00'):
-            draw_line(app, app.current_position, [x, y], 'ro-')
-            app.current_position = [x, y]
-            app.canvas.draw()
-            app.show_message(f"Eseguendo: {instruction}")
-            app.current_instruction_index += 1
-        else:
-            draw_line_with_speed(app, app.current_position, [x, y], 'bo-', feed_rate, lambda: on_step_complete(app, [x, y]))
+    if instruction.startswith('G01'):
+        draw_line(app, app.current_position, [x, y], 'bo-')
+        app.current_position = [x, y]
+        update_position(app, x, y)
+        app.canvas.draw()
+        app.show_message(f"Eseguendo: {instruction}")
+        app.current_instruction_index += 1
+    elif instruction.startswith('G00'):
+        # Update the position without drawing
+        app.current_position = [x, y]
+        update_position(app, x, y)
+        app.current_instruction_index += 1
     else:
         app.current_instruction_index += 1
-
-def on_step_complete(app, new_position):
-    """Callback per quando il disegno della linea è completo in modalità step."""
-    app.current_position = new_position
-    app.show_message(f"Istruzione completata: {app.gcode_listbox.get(app.current_instruction_index - 1)}")
 
 def execute_gcode_instruction(app, instruction, current_x, current_y):
     """Esegue una singola istruzione G-code e aggiorna la posizione."""
@@ -189,26 +161,6 @@ def execute_gcode_instruction(app, instruction, current_x, current_y):
             duration = distance / feed_rate
     return x, y, duration, feed_rate
 
-def draw_line_with_speed(app, start, end, style, feed_rate, callback):
-    """Disegna una linea sul grafico in modo incrementale rispettando la velocità di avanzamento."""
-    x0, y0 = start
-    x1, y1 = end
-    distance = math.sqrt((x1 - x0)**2 + (y1 - y0)**2)
-    steps = int(distance * 10)
-    dx = (x1 - x0) / steps
-    dy = (y1 - y0) / steps
-    delay = int((distance / feed_rate) / steps * 1000)
-
-    def draw_step(step):
-        if step > steps:
-            callback()
-            return
-        app.ax.plot([x0 + dx * (step - 1), x0 + dx * step], [y0 + dy * (step - 1), y0 + dy * step], style)
-        app.canvas.draw()
-        app.root.after(delay, lambda: draw_step(step + 1))
-    
-    draw_step(1)
-
 def draw_line(app, start, end, style):
     """Disegna una linea sul grafico."""
     app.ax.plot([start[0], end[0]], [start[1], end[1]], style)
@@ -220,9 +172,13 @@ def deselect_all_instructions(app):
 
 def cancel_simulation(app):
     """Interrompe la simulazione e torna alla schermata principale."""
-    app.simulation_stopped = True
+    clear_graph(app)
     app.clear_left_frame()
     initialize_left_frame(app)
+
+def clear_graph(app):
+    """Pulisce il grafico e lo reimposta alle dimensioni di default."""
+    initialize_graph(app, reset=True)
 
 def show_piece(app):
     """Mostra il pezzo attuale."""
